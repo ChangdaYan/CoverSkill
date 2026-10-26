@@ -20,6 +20,11 @@ def main():
     d = sub.add_parser("download")
     d.add_argument("--output", type=Path, default=Path("data/skillret"))
     d.add_argument(
+        "--source",
+        type=Path,
+        help="Use an already-downloaded copy of the pinned official snapshot.",
+    )
+    d.add_argument(
         "--only-qrels",
         action="store_true",
         help="Download only test qrels to evaluate released predictions.",
@@ -30,21 +35,29 @@ def main():
     t.add_argument("--output", type=Path, default=Path("work/full_query_tokens.pt"))
     a = p.parse_args()
     if a.command == "download":
-        from huggingface_hub import hf_hub_download
-
         info = {"repository": "ThakiCloud/SKILLRET", "revision": REVISION, "files": {}}
         for kind in ["qrels"] if a.only_qrels else ["queries", "qrels", "skills"]:
             for split in ["test"] if a.only_qrels else ["train", "test"]:
                 relative = f"{kind}/{split}.jsonl"
-                source = hf_hub_download(
-                    "ThakiCloud/SKILLRET",
-                    filename="data/" + relative,
-                    repo_type="dataset",
-                    revision=REVISION,
-                )
+                if a.source is not None:
+                    source = a.source / relative
+                    if not source.is_file():
+                        source = a.source / "data" / relative
+                    if not source.is_file():
+                        raise FileNotFoundError(source)
+                else:
+                    from huggingface_hub import hf_hub_download
+
+                    source = hf_hub_download(
+                        "ThakiCloud/SKILLRET",
+                        filename="data/" + relative,
+                        repo_type="dataset",
+                        revision=REVISION,
+                    )
                 target = a.output / relative
                 target.parent.mkdir(parents=True, exist_ok=True)
-                shutil.copyfile(source, target)
+                if Path(source).resolve() != target.resolve():
+                    shutil.copyfile(source, target)
                 info["files"][relative] = sha256_file(target)
         atomic_json(a.output / "dataset.json", info)
     else:

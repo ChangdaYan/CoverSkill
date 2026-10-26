@@ -8,7 +8,9 @@ export TOKENIZERS_PARALLELISM=false
 phase="${1:-help}"
 case "$phase" in
   data)
-    python -m coverskill.prepare download --output "$COVERSKILL_DATA"
+    data_args=(--output "$COVERSKILL_DATA")
+    if [[ -n "${SKILLRET_SOURCE:-}" ]]; then data_args+=(--source "$SKILLRET_SOURCE"); fi
+    python -m coverskill.prepare download "${data_args[@]}"
     python -m coverskill.prepare tokenize --data "$COVERSKILL_DATA" --model "$COVERSKILL_BASE_MODEL" --output "$COVERSKILL_WORK/full_query_tokens.pt"
     ;;
   generate)

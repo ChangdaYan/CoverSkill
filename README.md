@@ -73,6 +73,8 @@ bash scripts/reproduce.sh data
 
 An unmodified local snapshot can be supplied through `COVERSKILL_BASE_MODEL`. Stage 1 must start from the original [Qwen3-Embedding-0.6B](https://huggingface.co/Qwen/Qwen3-Embedding-0.6B), rather than any SkillRet-trained checkpoint.
 
+If the pinned SkillRet snapshot has already been downloaded, set `SKILLRET_SOURCE=/path/to/snapshot/data` before the `data` command to prepare it locally without network access. The standalone equivalent is `python -m coverskill.prepare download --source /path/to/snapshot/data --output data/skillret` (add `--only-qrels` when only evaluating the released rankings).
+
 ### 1. Generate train-only supervision
 
 Run offline generation in a **separate environment** with `requirements-generation.txt` and an unmodified [Qwen3-32B](https://huggingface.co/Qwen/Qwen3-32B):
