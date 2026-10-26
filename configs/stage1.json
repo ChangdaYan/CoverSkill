@@ -1,0 +1,15 @@
+{
+  "recipe_id": "MGCA",
+  "max_steps": 492,
+  "scheduler_horizon": 600,
+  "warmup_steps": 60,
+  "max_pairs": 189777,
+  "per_device_batch": 96,
+  "lr": 2e-05,
+  "group_lambda": 0.08,
+  "weakest_gold_lambda": 0.16,
+  "weakest_gold_temperature": 0.15,
+  "subintent_weight": 0.08,
+  "max_length": 4096,
+  "seed": 43
+}

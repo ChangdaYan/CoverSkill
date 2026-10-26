@@ -1,0 +1,16 @@
+__pycache__/
+*.py[cod]
+.venv/
+.env
+.DS_Store
+.ruff_cache/
+._*
+data/
+work/
+models/
+*.safetensors
+*.ckpt
+*.bin
+*.pt
+*.log
+*.lock

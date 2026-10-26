@@ -1,0 +1,2 @@
+# Use a separate environment for the offline Qwen3-32B generation step.
+vllm==0.17.0

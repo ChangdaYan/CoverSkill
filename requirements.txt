@@ -1,0 +1,9 @@
+# Reference training environment; CUDA 12.8 PyTorch wheels are recommended.
+torch==2.11.0
+transformers==5.3.0
+sentence-transformers==5.4.1
+datasets==4.8.4
+accelerate==1.13.0
+numpy>=1.26
+huggingface-hub>=1.0
+safetensors>=0.6
