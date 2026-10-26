@@ -10,12 +10,14 @@ from .common import HARD_ROWS, TRAIN_QRELS, TRAIN_QUERIES, iter_jsonl
 
 
 def select_decomposition_view(payload: dict, view: str = "filtered") -> dict:
-    """Return a reader view without mutating the canonical raw cache layer."""
+    """Return a reader view without mutating the original raw cache layer."""
     if view not in {"filtered", "raw"}:
         raise ValueError(f"unsupported decomposition view: {view}")
     if view == "raw":
         if payload.get("raw_generation_preserved") is not True:
-            raise RuntimeError("raw decomposition view requested from a legacy cache")
+            raise RuntimeError(
+                "raw decomposition view requested from a unsupported cache"
+            )
         token_key, alignment_key = "raw_subintent_tokens", "raw_alignments"
     else:
         token_key = (
@@ -66,7 +68,7 @@ class HardSampler:
 
 
 def load_full_records(*, require_decomposition: dict | None = None) -> list[dict]:
-    """Build one canonical row per official-train query from qrels."""
+    """Build one official row per official-train query from qrels."""
     qrels = load_qrels(TRAIN_QRELS)
     result = []
     subintents = (

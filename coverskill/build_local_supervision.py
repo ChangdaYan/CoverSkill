@@ -12,10 +12,10 @@ from transformers import AutoTokenizer
 
 from .common import (
     FULL_QUERY_TOKENS,
-    TRAIN_DECOMPOSITION as Q32_GOLD_FULLTRAIN,
+    TRAIN_DECOMPOSITION,
     ROOT,
-    HARD_ROWS as S2_OWN_HARD,
-    TRAIN_SKILL_CACHE as S2_TRAIN_SKILL_CACHE,
+    HARD_ROWS,
+    TRAIN_SKILL_CACHE,
     artifact,
     atomic_json,
     atomic_torch_save,
@@ -32,18 +32,18 @@ def parse_args():
         description="Build the train-only facet-aligned explicit-effect teacher cache"
     )
     parser.add_argument("--output", type=Path, default=ROOT / "teacher.pt")
-    parser.add_argument("--hard-rows", type=Path, default=S2_OWN_HARD)
+    parser.add_argument("--hard-rows", type=Path, default=HARD_ROWS)
     parser.add_argument(
         "--all-train",
         action="store_true",
         help="Build rows for all official-train queries",
     )
-    parser.add_argument("--document-cache", type=Path, default=S2_TRAIN_SKILL_CACHE)
+    parser.add_argument("--document-cache", type=Path, default=TRAIN_SKILL_CACHE)
     parser.add_argument("--micro-batch", type=int, default=12)
     parser.add_argument("--candidate-count", type=int, default=256)
     parser.add_argument("--effect-depth", type=int, default=50)
     parser.add_argument("--teacher-model", type=Path, required=True)
-    parser.add_argument("--decomposition", type=Path, default=Q32_GOLD_FULLTRAIN)
+    parser.add_argument("--decomposition", type=Path, default=TRAIN_DECOMPOSITION)
     parser.add_argument(
         "--decomposition-view", choices=("filtered", "raw"), default="filtered"
     )
@@ -53,15 +53,15 @@ def parse_args():
 
 
 @torch.inference_mode()
-def encode(reasoner, sequences, micro_batch, device):
+def encode(query_encoder, sequences, micro_batch, device):
     chunks = []
     for start in range(0, len(sequences), micro_batch):
         chunks.append(
-            reasoner.encode_anchor_features(
+            query_encoder.encode_anchor_features(
                 cached_features(sequences[start : start + micro_batch], device)
             ).cpu()
         )
-    return torch.cat(chunks) if chunks else torch.empty(0, reasoner.hidden_size)
+    return torch.cat(chunks) if chunks else torch.empty(0, query_encoder.hidden_size)
 
 
 def force_gold_topk(scores: torch.Tensor, gold: list[int], count: int):
@@ -218,9 +218,11 @@ def main() -> None:
     records = (
         load_full_records() if args.all_train else list(iter_jsonl(args.hard_rows))
     )
-    domain = "official_train_all" if args.all_train else "s2_own_hard8192"
+    domain = "official_train_all" if args.all_train else "hard_training_queries"
     if not args.all_train and len(records) != 8192:
-        raise RuntimeError(f"expected S2 own-hard8192, found {len(records)} rows")
+        raise RuntimeError(
+            f"expected 8192 own-parent hard queries, found {len(records)} rows"
+        )
     if args.max_queries:
         records = records[: args.max_queries]
     total_records = len(records)
@@ -234,8 +236,7 @@ def main() -> None:
     skill_ids = [str(value) for value in skill_payload["skill_ids"]]
     skill_index = {value: index for index, value in enumerate(skill_ids)}
     documents = F.normalize(skill_payload["embeddings"].float(), dim=-1)
-    recipe = {"representation": "anchor", "latent_steps": 0, "slot_count": 0}
-    reasoner = Retriever.from_pretrained(args.teacher_model, recipe).to(device).eval()
+    query_encoder = Retriever.from_pretrained(args.teacher_model).to(device).eval()
     tokenizer = AutoTokenizer.from_pretrained(
         args.teacher_model, local_files_only=True, trust_remote_code=True
     )
@@ -245,7 +246,7 @@ def main() -> None:
     for start in range(0, len(records), args.micro_batch):
         batch = records[start : start + args.micro_batch]
         full = encode(
-            reasoner,
+            query_encoder,
             [query_tokens[str(row["query_id"])] for row in batch],
             args.micro_batch,
             device,
@@ -257,7 +258,7 @@ def main() -> None:
             )[:3]:
                 intent_sequences.append(sequence)
                 owners.append(owner)
-        intent = encode(reasoner, intent_sequences, args.micro_batch, device)
+        intent = encode(query_encoder, intent_sequences, args.micro_batch, device)
         for owner, row in enumerate(batch):
             query_id = str(row["query_id"])
             branches = intent[
@@ -302,7 +303,7 @@ def main() -> None:
                 progress_path,
                 {
                     "status": "encoding",
-                    "kind": "s2_selective_effect",
+                    "kind": "selective_local_supervision",
                     "domain": domain,
                     "completed": completed,
                     "total": total_records,
@@ -333,13 +334,13 @@ def main() -> None:
         final = {
             "schema_version": 1,
             "complete": True,
-            "kind": "s2_selective_effect",
+            "kind": "selective_local_supervision",
             "domain": domain,
             "rows": merged,
             "query_count": len(merged),
             "candidate_count": args.candidate_count,
             "effect_depth": args.effect_depth,
-            "w0_sha256": parent_sha,
+            "parent_model_sha256": parent_sha,
             "document_cache_sha256": sha256_file(args.document_cache),
             "teacher_model": str(args.teacher_model.resolve()),
             "teacher_model_sha256": sha256_file(
@@ -359,10 +360,10 @@ def main() -> None:
             output.with_suffix(output.suffix + ".manifest.json"),
             {
                 "complete": True,
-                "kind": "s2_selective_effect",
+                "kind": "selective_local_supervision",
                 "domain": domain,
                 "query_count": len(merged),
-                "w0_sha256": parent_sha,
+                "parent_model_sha256": parent_sha,
                 "document_cache_sha256": sha256_file(args.document_cache),
                 "teacher_model": str(args.teacher_model.resolve()),
                 "teacher_model_sha256": sha256_file(

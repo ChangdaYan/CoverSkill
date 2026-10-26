@@ -25,7 +25,7 @@ from .common import (
     write_gzip_jsonl,
 )
 from .data import load_qrels
-from .modeling import Retriever, cached_features, primary_scores
+from .modeling import Retriever, cached_features, similarity_scores
 
 
 HARD_TARGETS = {1: 2048, 2: 4096, 3: 2048}
@@ -198,12 +198,7 @@ def main() -> None:
             "training qrels contain skills outside the Stage-1 document cache"
         )
     documents = F.normalize(document_payload["embeddings"].float(), dim=-1).to(device)
-    parent_recipe = (
-        read_json(args.model / "method_config.json")
-        if (args.model / "latent_aux.pt").is_file()
-        else {"representation": "anchor", "latent_steps": 0, "slot_count": 0}
-    )
-    reasoner = Retriever.from_pretrained(args.model, parent_recipe).to(device).eval()
+    query_encoder = Retriever.from_pretrained(args.model).to(device).eval()
 
     local_records = records[rank::world]
     local_rows: list[dict] = []
@@ -213,13 +208,8 @@ def main() -> None:
         for begin in range(0, len(local_records), args.micro_batch):
             batch = local_records[begin : begin + args.micro_batch]
             sequences = [query_tokens[row["query_id"]] for row in batch]
-            states = reasoner(cached_features(sequences, device)).states
-            scores = primary_scores(
-                states,
-                documents,
-                parent_recipe.get("primary_mode", "anchor"),
-                float(parent_recipe.get("primary_alpha", 0.2)),
-            )
+            states = query_encoder(cached_features(sequences, device)).states
+            scores = similarity_scores(states, documents)
             top_scores, top_indices = torch.topk(scores, k=args.top_k, dim=-1)
             top_scores = top_scores.cpu()
             top_indices = top_indices.cpu()

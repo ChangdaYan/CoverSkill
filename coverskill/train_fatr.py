@@ -46,7 +46,7 @@ from .training_budget import resolve_budget
 
 def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser()
-    parser.add_argument("--config", type=Path, default=Path("configs/stage2.json"))
+    parser.add_argument("--config", type=Path, default=Path("configs/fatr.json"))
     parser.add_argument("--parent", type=Path, required=True)
     parser.add_argument("--smoke-steps", type=int, default=0)
     parser.add_argument("--output-dir", type=Path)
@@ -85,15 +85,15 @@ def restore_batch_order(values: torch.Tensor, order: list[int]) -> torch.Tensor:
     )
 
 
-def encode_reasoning_no_grad(
-    reasoner, sequences, micro_batch, device, length_sorted=False
+def encode_queries_no_grad(
+    query_encoder, sequences, micro_batch, device, length_sorted=False
 ):
     chunks, entropy = [], []
     order = micro_batch_order(sequences, length_sorted)
     with torch.no_grad():
         for start in range(0, len(order), micro_batch):
             indices = order[start : start + micro_batch]
-            output = reasoner(
+            output = query_encoder(
                 cached_features([sequences[index] for index in indices], device)
             )
             chunks.append(output.states)
@@ -102,14 +102,14 @@ def encode_reasoning_no_grad(
     states = (
         torch.cat(chunks)
         if chunks
-        else torch.empty(0, 1, reasoner.hidden_size, device=device)
+        else torch.empty(0, 1, query_encoder.hidden_size, device=device)
     )
     entropies = torch.cat(entropy) if entropy else states.new_empty(states.shape[0], 0)
     return restore_batch_order(states, order), restore_batch_order(entropies, order)
 
 
 def encode_anchor_no_grad(
-    reasoner, sequences, micro_batch, device, length_sorted=False
+    query_encoder, sequences, micro_batch, device, length_sorted=False
 ):
     chunks = []
     order = micro_batch_order(sequences, length_sorted)
@@ -117,38 +117,38 @@ def encode_anchor_no_grad(
         for start in range(0, len(order), micro_batch):
             indices = order[start : start + micro_batch]
             chunks.append(
-                reasoner.encode_anchor_features(
+                query_encoder.encode_anchor_features(
                     cached_features([sequences[index] for index in indices], device)
                 )
             )
     values = (
         torch.cat(chunks)
         if chunks
-        else torch.empty(0, reasoner.hidden_size, device=device)
+        else torch.empty(0, query_encoder.hidden_size, device=device)
     )
     return restore_batch_order(values, order)
 
 
-def backward_reasoning(
-    reasoner, sequences, gradients, micro_batch, device, length_sorted=False
+def backward_queries(
+    query_encoder, sequences, gradients, micro_batch, device, length_sorted=False
 ):
     order = micro_batch_order(sequences, length_sorted)
     for start in range(0, len(order), micro_batch):
         indices = order[start : start + micro_batch]
         values = [sequences[index] for index in indices]
-        output = reasoner(cached_features(values, device)).states
+        output = query_encoder(cached_features(values, device)).states
         gradient_indices = torch.tensor(indices, device=gradients.device)
         torch.autograd.backward(output, gradients.index_select(0, gradient_indices))
 
 
 def backward_anchor(
-    reasoner, sequences, gradients, micro_batch, device, length_sorted=False
+    query_encoder, sequences, gradients, micro_batch, device, length_sorted=False
 ):
     order = micro_batch_order(sequences, length_sorted)
     for start in range(0, len(order), micro_batch):
         indices = order[start : start + micro_batch]
         values = [sequences[index] for index in indices]
-        output = reasoner.encode_anchor_features(cached_features(values, device))
+        output = query_encoder.encode_anchor_features(cached_features(values, device))
         gradient_indices = torch.tensor(indices, device=gradients.device)
         torch.autograd.backward(output, gradients.index_select(0, gradient_indices))
 
@@ -203,7 +203,7 @@ def validate_recipe(recipe):
     return {"recipe_id": "MGCA"}
 
 
-def save_checkpoint(reasoner, tokenizer, target, recipe, ancestry, manifest, step):
+def save_checkpoint(query_encoder, tokenizer, target, recipe, ancestry, manifest, step):
     free_gib = shutil.disk_usage(target.parent).free / 2**30
     if free_gib < 6:
         raise RuntimeError(
@@ -212,7 +212,7 @@ def save_checkpoint(reasoner, tokenizer, target, recipe, ancestry, manifest, ste
     if target.exists():
         raise RuntimeError(f"refusing to overwrite inference checkpoint {target}")
     temporary = target.with_name(f".{target.name}.{os.getpid()}.tmp")
-    reasoner.save_inference(temporary, tokenizer)
+    query_encoder.save_inference(temporary, tokenizer)
     atomic_json(temporary / "method_config.json", {**recipe, "step": step})
     atomic_json(
         temporary / "TRAINING_ANCESTRY.json",
@@ -260,10 +260,10 @@ def main() -> None:
             "checkpointing, all-reduce, and length-sorting overrides are permitted only in isolated smoke runs"
         )
     recipe.update({key: value for key, value in overrides.items() if value is not None})
-    canonical = validate_recipe(recipe)
+    parent_metadata = validate_recipe(recipe)
     rank, world, _, device = setup_distributed()
     if world != 4:
-        raise RuntimeError("S2 Stage-2 experiments require exactly four ranks")
+        raise RuntimeError("FATR training requires exactly four ranks")
     if 192 % world:
         raise RuntimeError("logical batch must divide world size")
     if smoke != (args.output_dir is not None):
@@ -372,7 +372,7 @@ def main() -> None:
             expected_document_sha = sha256_file(
                 Path(recipe["parent_model"]) / "model.safetensors"
             )
-        if teacher_payload.get("w0_sha256") != expected_document_sha:
+        if teacher_payload.get("parent_model_sha256") != expected_document_sha:
             raise RuntimeError(
                 "teacher cache document geometry does not match this recipe"
             )
@@ -394,12 +394,10 @@ def main() -> None:
         ):
             raise RuntimeError("teacher cache has no overlap with the training domain")
 
-    reasoner = Retriever.from_pretrained(Path(recipe["parent_model"]), recipe).to(
-        device
-    )
+    query_encoder = Retriever.from_pretrained(Path(recipe["parent_model"])).to(device)
     if recipe["gradient_checkpointing"]:
-        reasoner.enable_gradient_checkpointing()
-    for module in reasoner.modules():
+        query_encoder.enable_gradient_checkpointing()
+    for module in query_encoder.modules():
         if isinstance(module, torch.nn.Dropout) and module.p:
             raise RuntimeError(
                 "non-zero dropout violates deterministic GradCache recomputation"
@@ -408,29 +406,31 @@ def main() -> None:
         recipe["parent_model"], local_files_only=True, trust_remote_code=True
     )
     optimizer = torch.optim.AdamW(
-        reasoner.parameters(), lr=recipe["lr"], weight_decay=recipe["weight_decay"]
+        query_encoder.parameters(), lr=recipe["lr"], weight_decay=recipe["weight_decay"]
     )
-    formal_steps, steps = resolve_budget(recipe, args.smoke_steps if smoke else 0)
-    warmup = max(1, round(formal_steps * float(recipe["warmup_ratio"])))
+    schedule_steps, steps = resolve_budget(recipe, args.smoke_steps if smoke else 0)
+    warmup = max(1, round(schedule_steps * float(recipe["warmup_ratio"])))
     scheduler = torch.optim.lr_scheduler.LambdaLR(
         optimizer,
         lambda value: (
             (value + 1) / warmup
             if value < warmup
-            else max(0.0, (formal_steps - value) / max(1, formal_steps - warmup))
+            else max(0.0, (schedule_steps - value) / max(1, schedule_steps - warmup))
         ),
     )
     ancestry = {
         "training_stage": 2,
         "serial_training_depth": 2,
-        "parent_recipe_id": recipe.get("parent_recipe_id", canonical["recipe_id"]),
+        "parent_recipe_id": recipe.get(
+            "parent_recipe_id", parent_metadata["recipe_id"]
+        ),
         "parent_model": str(Path(recipe["parent_model"]).resolve()),
         "parent_model_sha256": sha256_file(
             Path(recipe["parent_model"]) / "model.safetensors"
         ),
         "recipe_id": recipe["recipe_id"],
         "recipe_sha256": stable_json_sha(recipe),
-        "fresh_from_w0": False,
+        "initialized_from_stage1": True,
         "direct_stage1_parent": True,
         "not_initialized_from_another_stage2": True,
     }
@@ -471,8 +471,8 @@ def main() -> None:
         else None,
         "engineering_smoke": smoke,
         "training_stop_steps": steps,
-        "lr_schedule_steps": formal_steps,
-        "auxiliary_schedule_steps": formal_steps,
+        "lr_schedule_steps": schedule_steps,
+        "auxiliary_schedule_steps": schedule_steps,
         "warmup_steps": warmup,
         "protocol": "final endpoint; no optimizer state",
         "updated_utc": utc_now(),
@@ -503,19 +503,19 @@ def main() -> None:
         )
 
         optimizer.zero_grad(set_to_none=True)
-        reasoner.train()
-        documents = reasoner.adapt_documents(base_documents)
+        query_encoder.train()
+        documents = query_encoder.adapt_documents(base_documents)
         torch.cuda.reset_peak_memory_stats(device)
         started = time.time()
         micro = int(recipe["query_micro_batch"])
         length_sorted = recipe["length_sorted_micro_batches"]
-        states, entropy = encode_reasoning_no_grad(
-            reasoner, sequences, micro, device, length_sorted
+        states, entropy = encode_queries_no_grad(
+            query_encoder, sequences, micro, device, length_sorted
         )
         states = states.detach().requires_grad_(True)
         intents = (
             encode_anchor_no_grad(
-                reasoner, intent_sequences, micro, device, length_sorted
+                query_encoder, intent_sequences, micro, device, length_sorted
             )
             .detach()
             .requires_grad_(True)
@@ -530,18 +530,18 @@ def main() -> None:
             recipe,
             teacher_rows,
             per_query_aligned=per_query_aligned,
-            training_progress=step / formal_steps,
+            training_progress=step / schedule_steps,
             base_documents=base_documents,
         )
         total.backward()
         if states.grad is None:
             raise RuntimeError("reasoning states received no gradient")
-        backward_reasoning(
-            reasoner, sequences, states.grad.detach(), micro, device, length_sorted
+        backward_queries(
+            query_encoder, sequences, states.grad.detach(), micro, device, length_sorted
         )
         if intent_sequences and intents.grad is not None:
             backward_anchor(
-                reasoner,
+                query_encoder,
                 intent_sequences,
                 intents.grad.detach(),
                 micro,
@@ -549,9 +549,11 @@ def main() -> None:
                 length_sorted,
             )
         allreduce_gradients(
-            reasoner, world, float(recipe["gradient_allreduce_bucket_mb"])
+            query_encoder, world, float(recipe["gradient_allreduce_bucket_mb"])
         )
-        grad_norm = float(torch.nn.utils.clip_grad_norm_(reasoner.parameters(), 1.0))
+        grad_norm = float(
+            torch.nn.utils.clip_grad_norm_(query_encoder.parameters(), 1.0)
+        )
         if not math.isfinite(grad_norm):
             raise RuntimeError("non-finite gradient")
         optimizer.step()
@@ -588,10 +590,10 @@ def main() -> None:
                 **metrics,
                 "step": step,
                 "max_steps": steps,
-                "lr_schedule_steps": formal_steps,
-                "auxiliary_schedule_steps": formal_steps,
+                "lr_schedule_steps": schedule_steps,
+                "auxiliary_schedule_steps": schedule_steps,
                 "grad_norm": grad_norm,
-                "latent_token_entropy": float(entropy_mean),
+                "query_token_entropy": float(entropy_mean),
                 "state_cosine_diversity": float(diversity.detach()),
                 "queries_per_second": 192 / float(elapsed),
                 "step_seconds": float(elapsed),
@@ -613,7 +615,7 @@ def main() -> None:
             dist.barrier()
             if rank == 0:
                 save_checkpoint(
-                    reasoner,
+                    query_encoder,
                     tokenizer,
                     run / f"checkpoint-{step}",
                     recipe,
@@ -645,7 +647,7 @@ def main() -> None:
             {
                 "checkpoint": str(endpoint),
                 "step": steps,
-                "lr_schedule_steps": formal_steps,
+                "lr_schedule_steps": schedule_steps,
                 "inference_only": True,
             },
         )

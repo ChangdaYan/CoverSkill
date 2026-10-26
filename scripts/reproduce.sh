@@ -19,20 +19,20 @@ case "$phase" in
     python -m coverskill.generate_rewrites --tasks "$COVERSKILL_WORK/rewrite_tasks.jsonl.gz" --output "$COVERSKILL_WORK/rewrites_raw.jsonl" --model "${GENERATOR_MODEL:-Qwen/Qwen3-32B}" --tensor-parallel-size 4
     python -m coverskill.curate_rewrites --source "$COVERSKILL_WORK/rewrites_raw.jsonl" --output "$COVERSKILL_WORK/rewrites.jsonl"
     ;;
-  stage1)
-    torchrun --standalone --nproc_per_node=4 -m coverskill.train_stage1 --base-model "$COVERSKILL_BASE_MODEL" --data "$COVERSKILL_DATA" --work "$COVERSKILL_WORK" --output "$COVERSKILL_WORK/stage1"
+  mgca)
+    torchrun --standalone --nproc_per_node=4 -m coverskill.train_mgca --base-model "$COVERSKILL_BASE_MODEL" --data "$COVERSKILL_DATA" --work "$COVERSKILL_WORK" --output "$COVERSKILL_WORK/stage1"
     ;;
-  refine)
+  fatr)
     parent="$COVERSKILL_WORK/stage1/final"
     torchrun --standalone --nproc_per_node=4 -m coverskill.build_index --model "$parent" --split train --output "$COVERSKILL_WORK/train_documents.pt"
-    torchrun --standalone --nproc_per_node=4 -m coverskill.mine_queries --model "$parent" --document-cache "$COVERSKILL_WORK/train_documents.pt" --document-manifest "$COVERSKILL_WORK/train_documents.manifest.json" --output "$COVERSKILL_WORK/hard_queries.jsonl.gz" --selection-id FIXED_FINAL_F2_OWN_HARD8192_v1 --micro-batch 12
-    torchrun --standalone --nproc_per_node=4 -m coverskill.build_teacher --all-train --teacher-model "$parent" --document-cache "$COVERSKILL_WORK/train_documents.pt" --decomposition "$COVERSKILL_WORK/subintents.pt" --output "$COVERSKILL_WORK/teacher.pt" --effect-depth 50 --micro-batch 12
-    torchrun --standalone --nproc_per_node=4 -m coverskill.train_stage2 --parent "$parent"
+    torchrun --standalone --nproc_per_node=4 -m coverskill.mine_hard_queries --model "$parent" --document-cache "$COVERSKILL_WORK/train_documents.pt" --document-manifest "$COVERSKILL_WORK/train_documents.manifest.json" --output "$COVERSKILL_WORK/hard_queries.jsonl.gz" --selection-id MGCA_HARD_QUERIES --micro-batch 12
+    torchrun --standalone --nproc_per_node=4 -m coverskill.build_local_supervision --all-train --teacher-model "$parent" --document-cache "$COVERSKILL_WORK/train_documents.pt" --decomposition "$COVERSKILL_WORK/subintents.pt" --output "$COVERSKILL_WORK/teacher.pt" --effect-depth 50 --micro-batch 12
+    torchrun --standalone --nproc_per_node=4 -m coverskill.train_fatr --parent "$parent"
     ;;
   evaluate)
     torchrun --standalone --nproc_per_node=4 -m coverskill.build_index --model "$COVERSKILL_WORK/stage1/final" --split test --batch-skills 4 --output "$COVERSKILL_WORK/test_documents.pt"
-    torchrun --standalone --nproc_per_node=4 -m coverskill.retrieve --model "$COVERSKILL_WORK/runs/FASR/seed43/final" --index "$COVERSKILL_WORK/test_documents.pt" --output "$COVERSKILL_WORK/predictions"
+    torchrun --standalone --nproc_per_node=4 -m coverskill.retrieve --model "$COVERSKILL_WORK/runs/FATR/seed43/final" --index "$COVERSKILL_WORK/test_documents.pt" --output "$COVERSKILL_WORK/predictions"
     python -m coverskill.evaluate --rankings "$COVERSKILL_WORK/predictions/rankings.tsv.gz" --qrels "$COVERSKILL_DATA/qrels/test.jsonl"
     ;;
-  *) printf 'Usage: bash scripts/reproduce.sh {data|generate|stage1|refine|evaluate}\n'; exit 2 ;;
+  *) printf 'Usage: bash scripts/reproduce.sh {data|generate|mgca|fatr|evaluate}\n'; exit 2 ;;
 esac

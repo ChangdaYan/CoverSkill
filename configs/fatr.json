@@ -20,11 +20,8 @@
   "per_gold_effect_max_pairs": 12,
   "per_gold_effect_temperature": 0.05,
   "per_gold_effect_weight": 0.1,
-  "primary_alpha": 0,
-  "primary_mode": "anchor",
   "query_max_length": 4096,
   "query_micro_batch": 12,
-  "representation": "anchor",
   "retrieval_temperature": 0.05,
   "serial_training_depth": 2,
   "teacher_mode": "static",
@@ -34,10 +31,8 @@
   "export_final_checkpoint": true,
   "seed": 43,
   "frozen_document_layout": "facets",
-  "recipe_id": "FASR",
+  "recipe_id": "FATR",
   "train": true,
   "parent_contract": "own_stage1",
-  "latent_steps": 0,
-  "slot_count": 0,
   "facet_max_length": 512
 }

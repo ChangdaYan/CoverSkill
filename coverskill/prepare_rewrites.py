@@ -45,7 +45,7 @@ def main() -> None:
     payload = torch.load(args.source_cache, map_location="cpu", weights_only=False)
     if not payload.get("complete") or not payload.get("raw_generation_preserved"):
         raise SystemExit(
-            "source Q32 cache is incomplete or lacks immutable raw generations"
+            "source Qwen3-32B cache is incomplete or lacks immutable raw generations"
         )
     from transformers import AutoTokenizer
 

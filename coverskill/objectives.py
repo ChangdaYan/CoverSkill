@@ -2,7 +2,7 @@ from __future__ import annotations
 import math
 import torch
 import torch.nn.functional as F
-from .modeling import primary_scores
+from .modeling import similarity_scores
 
 
 def masked_target_ce(
@@ -165,7 +165,7 @@ def compute_objective(
     base_documents=None,
 ):
     temperature = float(recipe["retrieval_temperature"])
-    scores = primary_scores(states, documents)
+    scores = similarity_scores(states, documents)
     offsets, selected = dynamic_offsets(
         scores / temperature,
         gold,

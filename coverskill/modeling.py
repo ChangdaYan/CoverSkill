@@ -42,13 +42,7 @@ class Retriever(nn.Module):
         self.lm = lm
 
     @classmethod
-    def from_pretrained(cls, checkpoint, recipe=None, **kwargs):
-        if recipe and (
-            recipe.get("representation", "anchor") != "anchor"
-            or recipe.get("latent_steps", 0)
-            or recipe.get("slot_count", 0)
-        ):
-            raise ValueError("Only the single-vector main method is included.")
+    def from_pretrained(cls, checkpoint, **kwargs):
         lm = AutoModelForCausalLM.from_pretrained(
             checkpoint, trust_remote_code=False, dtype=torch.bfloat16, **kwargs
         )
@@ -95,7 +89,5 @@ class Retriever(nn.Module):
         tokenizer.save_pretrained(target)
 
 
-def primary_scores(states, documents, mode="anchor", alpha=0):
-    if mode != "anchor":
-        raise ValueError("The main method uses one query vector.")
-    return states[:, 0] @ documents.T
+def similarity_scores(query_states, skill_embeddings):
+    return query_states[:, 0] @ skill_embeddings.T

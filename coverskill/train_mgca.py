@@ -181,7 +181,9 @@ def select_decomposition_view(payload: dict, view: str) -> dict:
         raise ValueError(f"unsupported decomposition view: {view}")
     if view == "raw":
         if payload.get("raw_generation_preserved") is not True:
-            raise RuntimeError("raw decomposition view requested from a legacy cache")
+            raise RuntimeError(
+                "raw decomposition view requested from a unsupported cache"
+            )
         token_key, alignment_key = "raw_subintent_tokens", "raw_alignments"
     else:
         token_key = (
@@ -229,7 +231,7 @@ def stable_ids(values: list[str]) -> dict[str, int]:
     return {value: index + 1 for index, value in enumerate(sorted(set(values)))}
 
 
-def crossgold_options(
+def mgca_options(
     query: dict,
     skills: dict[str, dict],
     seed: int,
@@ -252,7 +254,7 @@ def crossgold_options(
                 options.append((sid, f"semantic_{facet_name}", facet_text))
             continue
     if not options:
-        raise ValueError(f"Query {qid} has no valid Cross-Gold options")
+        raise ValueError(f"Query {qid} has no valid Multi-granularity options")
     return options
 
 
@@ -350,7 +352,7 @@ def build_dataset(
                     "query_gold_routing", query_index, len(usable_queries)
                 )
     options = {
-        query["id"]: crossgold_options(
+        query["id"]: mgca_options(
             query,
             skills,
             seed,
@@ -490,7 +492,7 @@ def build_dataset(
         "semantic_router": (
             "fixed lexical routing from per-gold query-supported subintent to Markdown facet"
             if positive_views == "semantic_routed"
-            else "legacy CrossGold round-robin"
+            else "round-robin skill views"
         ),
         "semantic_skill_facet_cache_entries": len(semantic_facet_cache),
         "semantic_query_gold_route_cache_entries": len(routed_view_cache),
@@ -630,7 +632,7 @@ class FixedOrderSampler(Sampler[int]):
         return len(self.indices)
 
 
-class CrossGoldTrainer(SentenceTransformerTrainer):
+class MGCATrainer(SentenceTransformerTrainer):
     def __init__(
         self,
         *args,
@@ -698,7 +700,7 @@ class CrossGoldTrainer(SentenceTransformerTrainer):
         )
 
 
-class CachedCrossGoldLoss(CachedMultipleNegativesRankingLoss):
+class CachedMGCALoss(CachedMultipleNegativesRankingLoss):
     """Standard single-positive CachedMNRL plus optional corrected components."""
 
     def __init__(
@@ -775,7 +777,7 @@ class CachedCrossGoldLoss(CachedMultipleNegativesRankingLoss):
         self, reps: list[list[torch.Tensor]], with_backward: bool = False
     ) -> torch.Tensor:
         if self._labels is None:
-            raise RuntimeError("Missing Cross-Gold labels")
+            raise RuntimeError("Missing Multi-granularity labels")
         cursor = 0
         local_queries = torch.cat(reps[cursor])
         cursor += 1
@@ -792,7 +794,7 @@ class CachedCrossGoldLoss(CachedMultipleNegativesRankingLoss):
             local_group = [torch.cat(reps[cursor + slot]) for slot in range(MAX_GOLDS)]
             cursor += MAX_GOLDS
         if cursor != len(reps):
-            raise RuntimeError("Cross-Gold feature cursor mismatch")
+            raise RuntimeError("Multi-granularity feature cursor mismatch")
 
         local_labels = self._labels.to(local_queries.device)
         local_batch = local_queries.size(0)
@@ -1015,7 +1017,7 @@ class CachedCrossGoldLoss(CachedMultipleNegativesRankingLoss):
             temporary = status_path.with_name(f".{status_path.name}.{os.getpid()}.tmp")
             temporary.write_text(json.dumps(record, indent=2) + "\n", encoding="utf-8")
             os.replace(temporary, status_path)
-            logger.info("crossgold_components=%s", json.dumps(record, sort_keys=True))
+            logger.info("mgca_components=%s", json.dumps(record, sort_keys=True))
         return total
 
     def get_config_dict(self) -> dict:
@@ -1037,7 +1039,7 @@ def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(
         description="Train MGCA from an unmodified pretrained backbone."
     )
-    parser.add_argument("--config", type=Path, default=Path("configs/stage1.json"))
+    parser.add_argument("--config", type=Path, default=Path("configs/mgca.json"))
     parser.add_argument("--base-model", default=RAW_BASE_MODEL)
     parser.add_argument("--output", type=Path, default=Path("work/stage1"))
     parser.add_argument(
@@ -1056,7 +1058,7 @@ def parse_args() -> argparse.Namespace:
 
     a.base_model = str(resolve_backbone(a.base_model))
     return argparse.Namespace(
-        variant="MGCA",
+        method_name="MGCA",
         output_dir=str(a.output),
         query_unique=True,
         gold_denominator_mask=True,
@@ -1207,7 +1209,7 @@ def main() -> None:
         (out_dir / "train_config.json").write_text(
             json.dumps(config, indent=2), encoding="utf-8"
         )
-        logger.info("Cross-Gold config=%s", json.dumps(config, sort_keys=True))
+        logger.info("Multi-granularity config=%s", json.dumps(config, sort_keys=True))
 
     train_args = SentenceTransformerTrainingArguments(
         output_dir=str(out_dir),
@@ -1231,7 +1233,7 @@ def main() -> None:
         remove_unused_columns=False,
         ddp_find_unused_parameters=False,
         report_to="none",
-        run_name=f"crossgold_{args.variant}",
+        run_name=args.method_name,
         prompts={"anchor": SKILL_QUERY_PROMPT},
         lr_scheduler_type="linear",
         max_steps=args.max_steps,
@@ -1241,7 +1243,7 @@ def main() -> None:
         ddp_timeout=1800,
     )
     stats_path = out_dir / "training_component_stats.jsonl"
-    loss = CachedCrossGoldLoss(
+    loss = CachedMGCALoss(
         model,
         scale=20.0,
         mini_batch_size=args.mini_batch_size,
@@ -1255,7 +1257,7 @@ def main() -> None:
         stats_path=stats_path,
         max_steps=args.max_steps,
     )
-    trainer = CrossGoldTrainer(
+    trainer = MGCATrainer(
         model=model,
         args=train_args,
         train_dataset=dataset,
@@ -1286,7 +1288,7 @@ def main() -> None:
 
         ancestry = {
             "recipe_id": recipe["recipe_id"],
-            "training_stage_id": "stage1_w0",
+            "training_stage_id": "MGCA",
             "training_stage": 1,
             "parent_path": str(args.checkpoint),
             "parent_model_sha256": file_sha(

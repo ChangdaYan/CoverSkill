@@ -33,7 +33,7 @@ from .data import load_qrels, skill_text
 
 def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(
-        description="Generate frozen train-only Q32 intent views"
+        description="Generate frozen train-only Qwen3-32B intent views"
     )
     parser.add_argument("--mode", choices=("gold_anchored",), default="gold_anchored")
     parser.add_argument("--domain", choices=("full",), default="full")
@@ -208,7 +208,9 @@ def main() -> None:
     os.environ["VLLM_USE_FLASHINFER_SAMPLER"] = (
         "1" if args.sampler_backend == "flashinfer" else "0"
     )
-    triton = args.output.parent / "triton_q32" / f"pid-{os.getpid()}-{time.time_ns()}"
+    triton = (
+        args.output.parent / "triton_generation" / f"pid-{os.getpid()}-{time.time_ns()}"
+    )
     triton.mkdir(parents=True, exist_ok=False)
     os.environ["TRITON_CACHE_DIR"] = str(triton)
     query_rows = {str(row["id"]): row for row in iter_jsonl(TRAIN_QUERIES)}
@@ -456,7 +458,7 @@ def main() -> None:
                     separators=(",", ":"),
                 )
                 if raw_payload_after_filter != raw_payload_before_filter:
-                    raise RuntimeError("filtering mutated the canonical raw payload")
+                    raise RuntimeError("filtering mutated the original raw payload")
             row = {
                 "item_key": key,
                 "query_id": qid,
@@ -657,7 +659,7 @@ def main() -> None:
             ),
             "reused_hard_artifact": None,
             "artifact": artifact(
-                args.output, "frozen train-only Q32 subintent/alignment cache"
+                args.output, "frozen train-only Qwen3-32B subintent/alignment cache"
             ),
             "updated_utc": utc_now(),
         },

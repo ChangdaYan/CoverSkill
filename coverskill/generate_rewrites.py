@@ -1,4 +1,4 @@
-"""Q32 generation and separate Q32 verification of complete-gold full queries.
+"""Qwen3-32B generation and independent verification of complete-gold queries.
 
 The raw record stream is append-only and resumable. Rejected generations stay in
 the stream for auditing; no output is silently relabelled or deleted.

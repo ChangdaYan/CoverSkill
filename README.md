@@ -1,12 +1,12 @@
 # CoverSkill
 
-**CoverSkill: Coverage-Aware Alignment and Facet-Aligned Refinement for Agent Skill Retrieval**
+**CoverSkill: Coverage-Aware Alignment and Facet-Aligned Targeted Refinement for Agent Skill Retrieval**
 
 Minimal implementation of the two-stage, single-vector retriever. This repository contains data preparation and generation, the main training pipeline, inference/evaluation, and the final model's test rankings and embeddings. It does not contain model weights, SkillRet data, generated training data, analysis or ablation experiments.
 
 ## Reported model
 
-The released predictions use the final **492-update MGCA → 300-update FASR** model and a frozen four-facet mean skill index, on the **original SkillRet official test**: 4,997 queries and 6,660 candidate skills.
+The released predictions use the final **492-update MGCA → 300-update FATR** model and a frozen four-facet mean skill index, on the **original SkillRet official test**: 4,997 queries and 6,660 candidate skills.
 
 | Metric (%) | @5 | @10 | @15 |
 | --- | ---: | ---: | ---: |
@@ -18,11 +18,9 @@ All numbers are single-run point estimates. Completeness is the fraction of quer
 
 ## Evaluate the released results
 
-Obtain the original dataset from [ThakiCloud/SKILLRET](https://huggingface.co/datasets/ThakiCloud/SKILLRET). The download command pins revision `7cae7cfbad2b0e1ebc9170892f568993aae543b0`; the dataset is downloaded locally and is not redistributed here.
+Run the commands below from this repository's root. Obtain the original dataset from [ThakiCloud/SKILLRET](https://huggingface.co/datasets/ThakiCloud/SKILLRET). The download command pins revision `7cae7cfbad2b0e1ebc9170892f568993aae543b0`; the dataset is downloaded locally and is not redistributed here.
 
 ```bash
-git clone https://github.com/ChangdaYan/CoverSkill.git
-cd CoverSkill
 pip install huggingface-hub numpy
 python -m coverskill.prepare download --output data/skillret --only-qrels
 python -m coverskill.evaluate \
@@ -42,7 +40,7 @@ query_id  Q0  skill_id  rank  score  CoverSkill
 | --- | --- | --- |
 | `query_ids` | (4997,) | Row IDs of the test queries |
 | `skill_ids` | (6660,) | Row IDs of the test candidate skills |
-| `query_embeddings` | (4997, 1024) | Final FASR query vectors |
+| `query_embeddings` | (4997, 1024) | Final FATR query vectors |
 | `skill_embeddings` | (6660, 1024) | Frozen MGCA four-facet mean skill vectors |
 
 There are no query texts, skill documents or relevance labels in these files. The skill vectors come from the **Stage-1** encoder; the query vectors come from the **Stage-2** encoder. Query vectors preserve the formal evaluator's FP16 rounding, stored in FP32 arrays. Skill vectors are FP32-normalized from the frozen FP16 index. Rank using their dot product **without normalizing the supplied arrays again**.
@@ -95,22 +93,22 @@ The original run retained 86,831 subintents and 12,349 complete rewrites. The re
 Return to the training environment:
 
 ```bash
-bash scripts/reproduce.sh stage1
+bash scripts/reproduce.sh mgca
 ```
 
 Multi-Granularity Coverage Alignment jointly updates a shared query/skill encoder. Original full queries and accepted full rewrites are the primary inputs; aligned subintents provide auxiliary alignment. Individual Identity, Procedure, Interface and Constraints views supply skill-side supervision. The objective combines primary contrastive alignment, subintent alignment, group coverage and weakest-gold coverage. Batches follow the original query-unique round-robin order.
 
-### 3. Build the frozen skill space and train FASR
+### 3. Build the frozen skill space and train FATR
 
 ```bash
-bash scripts/reproduce.sh refine
+bash scripts/reproduce.sh fatr
 ```
 
-Facet-Aligned Selective Refinement uses only its own MGCA parent. Each training skill is represented by the normalized mean of four separately encoded, normalized facets. This frozen training matrix is used for hard-query mining, teacher comparisons and the student retrieval objective.
+Facet-Aligned Targeted Refinement uses only its own MGCA parent. Each training skill is represented by the normalized mean of four separately encoded, normalized facets. This frozen training matrix is used for hard-query mining, teacher comparisons and the student retrieval objective.
 
 The parent selects 8,192 hard training queries, stratified as 2,048/4,096/2,048 one-/two-/three-gold requests. Training mixes these with ordinary training queries 1:1. The student emphasizes its current Top-96 non-gold negatives by a factor of two. A frozen parent teacher blends full-query and strongest subintent similarities (0.8/0.2). Local gold–non-gold supervision retains up to 12 pairs per query whose teacher margin improves by more than 0.005 and whose parent margin is at most 0.05. The teacher does not have to rank a retained pair correctly. Subintent alignment remains an auxiliary objective; only the query encoder is updated.
 
-| Setting | MGCA | FASR |
+| Setting | MGCA | FATR |
 | --- | ---: | ---: |
 | Final update | 492 | 300 |
 | Linear LR schedule horizon | 600 | 450 |
@@ -135,7 +133,7 @@ Stopping and LR horizons are separate: the run ends at update 492/300 while pres
 bash scripts/reproduce.sh evaluate
 ```
 
-The test skill index is built independently from test skill documents, using the same four-facet construction and frozen MGCA document encoder. The final FASR encoder encodes each full query once. No test subintents, query rewrites or relevance labels are used during encoding or retrieval. Evaluation reads the official test qrels after predictions are saved.
+The test skill index is built independently from test skill documents, using the same four-facet construction and frozen MGCA document encoder. The final FATR encoder encodes each full query once. No test subintents, query rewrites or relevance labels are used during encoding or retrieval. Evaluation reads the official test qrels after predictions are saved.
 
 ## Files
 
